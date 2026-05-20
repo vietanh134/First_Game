@@ -1,0 +1,22 @@
+{
+  "levels_unlocked": 6,
+  "player_skin": "mu",
+  "unlocked_weapons": [
+    "pistol",
+    "advanced_sniper",
+    "smg",
+    "sniper",
+    "shotgun"
+  ],
+  "equipped_weapons": [
+    "smg",
+    "pistol"
+  ],
+  "selected_weapon": "smg",
+  "coins": 322181,
+  "unlocked_pets": [
+    "mini_robot",
+    "plasma_pup"
+  ],
+  "selected_pet": "mini_robot"
+}
