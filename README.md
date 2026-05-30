@@ -4,6 +4,32 @@
 
 ---
 
+## 📸 HÌNH ẢNH TRÒ CHƠI
+
+### 🖥️ Sảnh chờ & Giao diện chính (Lobby)
+![Sảnh chờ Game](image.png)
+
+### 🎮 Gameplay thực tế
+![Gameplay](screenshot.png)
+
+### 🗺️ Bản đồ các màn chơi (Levels)
+<table>
+  <tr>
+    <td align="center"><b>Màn 1: Thành Phố Hoang Tàn</b><br><img src="level_1.png" width="300"></td>
+    <td align="center"><b>Màn 2: Khu Rừng Rậm Rạp</b><br><img src="level_2.png" width="300"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Màn 3: Sa Mạc Chết Chóc</b><br><img src="level_3.png" width="300"></td>
+    <td align="center"><b>Màn 4: Nghĩa Địa Ma Quái</b><br><img src="level_4.png" width="300"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Màn 5: Hầm Băng Giá</b><br><img src="level_5.png" width="300"></td>
+    <td align="center"><b>Màn 6: Pháo Đài Tận Thế</b><br><img src="level_6.png" width="300"></td>
+  </tr>
+</table>
+
+---
+
 ## 📖 CỐT TRUYỆN
 
 **Năm 2050**, thế giới sụp đổ hoàn toàn. Đại dịch robot nổi loạn tàn phá nhân loại, khiến mọi thành phố chìm vào bóng đêm.
