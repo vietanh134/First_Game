@@ -9,9 +9,6 @@
 ### 🖥️ Sảnh chờ & Giao diện chính (Lobby)
 ![Sảnh chờ Game](image.png)
 
-### 🎮 Gameplay thực tế
-![Gameplay](screenshot.png)
-
 ### 🗺️ Bản đồ các màn chơi (Levels)
 <table>
   <tr>
