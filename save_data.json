@@ -10,13 +10,15 @@
   ],
   "equipped_weapons": [
     "smg",
-    "pistol"
+    "shotgun"
   ],
   "selected_weapon": "smg",
-  "coins": 322181,
+  "coins": 322618,
   "unlocked_pets": [
     "mini_robot",
     "plasma_pup"
   ],
-  "selected_pet": "mini_robot"
+  "selected_pet": "mini_robot",
+  "lobby_volume": 0.2,
+  "game_volume": 0.28
 }

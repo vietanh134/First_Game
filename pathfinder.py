@@ -16,8 +16,17 @@ def cell_to_world(cx, cy):
     """Return centre of cell in world coordinates."""
     return cx * CELL + CELL // 2, cy * CELL + CELL // 2
 
+_cached_grid = None
+_cached_walls_key = None
+
 def build_grid(walls, map_w, map_h):
-    """Build a 2D boolean grid (True = blocked) from wall rects."""
+    """Build a 2D boolean grid (True = blocked) from wall rects, using cache if walls haven't changed."""
+    global _cached_grid, _cached_walls_key
+    # Create a quick key representing the walls list
+    walls_key = (len(walls), map_w, map_h)
+    if _cached_walls_key == walls_key and _cached_grid is not None:
+        return _cached_grid
+
     cols = math.ceil(map_w / CELL) + 1
     rows = math.ceil(map_h / CELL) + 1
     blocked = [[False] * cols for _ in range(rows)]
@@ -29,7 +38,10 @@ def build_grid(walls, map_w, map_h):
         for r in range(r0, r1 + 1):
             for c in range(c0, c1 + 1):
                 blocked[r][c] = True
-    return blocked, rows, cols
+    
+    _cached_grid = (blocked, rows, cols)
+    _cached_walls_key = walls_key
+    return _cached_grid
 
 def get_neighbors(cx, cy, blocked, rows, cols):
     """8-directional neighbours (diagonals allowed)."""

@@ -74,7 +74,7 @@ ROBOT_CONFIGS = {
     'green': {'color': (50, 220, 80), 'hp': 80, 'speed': 1.8, 'radius': 12, 'dmg': 10, 'fear_light': False},
     'boss': {'color': (255, 255, 255), 'hp': 300, 'speed': 1.0, 'radius': 28, 'dmg': 25, 'fear_light': False},
     'yellow': {'color': (255, 220, 50), 'hp': 130, 'speed': 1.6, 'radius': 13, 'dmg': 20, 'fear_light': False},
-    'white_giant': {'color': (240, 240, 240), 'hp': 300, 'speed': 1.0, 'radius': 28, 'dmg': 25, 'fear_light': False},
+    'white_giant': {'color': (240, 240, 240), 'hp': 1000, 'speed': 1.1, 'radius': 35, 'dmg': 25, 'fear_light': False},
 }
 
 # Level configs: List of dicts specifying robot counts
@@ -84,7 +84,7 @@ LEVEL_ROBOTS = [
     {'blue': 4, 'yellow': 4, 'green': 3},               # Màn 3: 4 blue, 4 vàng, 3 green
     {'blue': 5, 'green': 5, 'yellow': 5},               # Màn 4: 5 blue, 5 green, 5 vàng
     {'blue': 7, 'green': 7, 'yellow': 5},               # Màn 5: 7 blue, 7 green, 5 vàng
-    {'blue': 6, 'yellow': 6, 'green': 6, 'white_giant': 1}, # Màn 6: vàng thay trắng, giữ khổng lồ
+    {'blue': 3, 'yellow': 3, 'green': 3, 'white_giant': 1}, # Màn 6: mỗi robot nhỏ chỉ 3 con, giữ nguyên khổng lồ
 ]
 
 LEVEL_NAMES = [

@@ -2,9 +2,9 @@
 import pygame, math, random, os
 from constants import *
 try:
-    from pathfinder import dfs as pf_dfs
+    from pathfinder import bfs as pf_bfs
 except ImportError:
-    pf_dfs = None
+    pf_bfs = None
 
 # Cache font để tránh tạo lại mỗi frame (giảm lag)
 _entity_font_cache = {}
@@ -150,14 +150,23 @@ class Player:
         if keys[pygame.K_a]: dx -= 1
         if keys[pygame.K_d]: dx += 1
 
-        # Hướng nhìn theo phím di chuyển (không dùng chuột)
+        # Hướng nhìn theo con chuột
+        world_mx = mx + cam_x
+        world_my = my + cam_y
+        self.angle = math.atan2(world_my - self.y, world_mx - self.x)
+        
+        # Xác định hướng nhìn cho sprite animation dựa trên góc hướng tới con chuột
+        deg = math.degrees(self.angle) % 360
+        if 45 <= deg < 135:
+            self.facing = 'down'
+        elif 135 <= deg < 225:
+            self.facing = 'left'
+        elif 225 <= deg < 315:
+            self.facing = 'up'
+        else:
+            self.facing = 'right'
+
         if dx != 0 or dy != 0:
-            self.angle = math.atan2(dy, dx)
-            # Xác định hướng nhìn cho sprite animation
-            if abs(dx) > abs(dy):
-                self.facing = 'right' if dx > 0 else 'left'
-            else:
-                self.facing = 'down' if dy > 0 else 'up'
             self.is_moving = True
         else:
             self.is_moving = False
@@ -1242,10 +1251,10 @@ class Robot:
         self.lightning_timer = random.uniform(0, 1.5)  # Timer nhấp nháy tia sét
         self.lightning_phase = 0.0                      # Phase animation sét
 
-        # === DFS PATHFINDING CACHE (for all robots) ===
-        self.dfs_path = []          # List waypoints [(wx, wy), ...]
-        self.dfs_refresh = 1.2      # Recompute every 1.2 seconds
-        self.dfs_timer = random.uniform(0.0, self.dfs_refresh)  # Staggered initial compute time
+        # === BFS PATHFINDING CACHE (for all robots) ===
+        self.bfs_path = []          # List waypoints [(wx, wy), ...]
+        self.bfs_refresh = 1.2      # Recompute every 1.2 seconds
+        self.bfs_timer = random.uniform(0.0, self.bfs_refresh)  # Staggered initial compute time
 
         # Load sprites tương ứng
         if self.rtype == 'blue':
@@ -1257,27 +1266,27 @@ class Robot:
         elif self.rtype == 'yellow':
             Robot._load_yellow_sprites()
 
-    def _get_dfs_move_angle(self, player, walls, map_w, map_h, dt):
-        """Return the angle towards the next DFS waypoint if a path exists, else None."""
-        if pf_dfs:
-            self.dfs_timer -= dt
-            if self.dfs_timer <= 0 or not self.dfs_path:
-                self.dfs_path = pf_dfs(
+    def _get_bfs_move_angle(self, player, walls, map_w, map_h, dt):
+        """Return the angle towards the next BFS waypoint if a path exists, else None."""
+        if pf_bfs:
+            self.bfs_timer -= dt
+            if self.bfs_timer <= 0 or not self.bfs_path:
+                self.bfs_path = pf_bfs(
                     (self.x, self.y), (player.x, player.y),
                     walls, map_w, map_h
                 )
-                self.dfs_timer = self.dfs_refresh
-            if self.dfs_path:
-                wx, wy = self.dfs_path[0]
+                self.bfs_timer = self.bfs_refresh
+            if self.bfs_path:
+                wx, wy = self.bfs_path[0]
                 # Check if we have arrived close to the waypoint
                 if math.hypot(wx - self.x, wy - self.y) < 20:
-                    self.dfs_path.pop(0)
-                    if self.dfs_path:
-                        wx, wy = self.dfs_path[0]
+                    self.bfs_path.pop(0)
+                    if self.bfs_path:
+                        wx, wy = self.bfs_path[0]
                 return math.atan2(wy - self.y, wx - self.x)
         return None
 
-    def update(self, player, walls, dt, in_light=False, robots=None, map_w=MAP_W, map_h=MAP_H):
+    def update(self, player, walls, dt, in_light=False, robots=None, map_w=MAP_W, map_h=MAP_H, level_num=0):
         if not self.alive:
             return None
         if self.stun_timer > 0:
@@ -1305,9 +1314,14 @@ class Robot:
         dist = math.hypot(player.x - self.x, player.y - self.y)
         angle_to_player = math.atan2(player.y - self.y, player.x - self.x)
         shot_bullet = None
+        
+        # Chế độ "vắt kiệt" màn 6 (level_num == 5): phát hiện người chơi khi không núp tường trong cự ly 850px
+        is_seen_on_lvl6 = (level_num == 5 and dist < 850 and self._has_line_of_sight(player, walls))
+        if is_seen_on_lvl6:
+            self.aggro_timer = max(self.aggro_timer, 2.0)
 
-        # Get DFS path angle if available
-        dfs_angle = self._get_dfs_move_angle(player, walls, map_w, map_h, dt)
+        # Get BFS path angle if available
+        bfs_angle = self._get_bfs_move_angle(player, walls, map_w, map_h, dt)
 
         # Lưu vị trí cũ để xác định hướng di chuyển cho animation
         old_x, old_y = self.x, self.y
@@ -1325,32 +1339,32 @@ class Robot:
                 nx, ny = self.x + mx, self.y + my
                 if not self._hit_wall(nx, self.y, walls): self.x = nx
                 if not self._hit_wall(self.x, ny, walls): self.y = ny
-            elif (player.light_on or is_aggro) and dist < chase_range:
-                move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+            elif (player.light_on or is_aggro or is_seen_on_lvl6) and dist < chase_range:
+                move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                 step_x = math.cos(move_angle) * chase_speed
                 step_y = math.sin(move_angle) * chase_speed
                 nx, ny = self.x + step_x, self.y + step_y
                 if not self._hit_wall(nx, self.y, walls): self.x = nx
                 if not self._hit_wall(self.x, ny, walls): self.y = ny
             else:
-                self.dfs_path = []  # Reset path khi không đuổi
+                self.bfs_path = []  # Reset path khi không đuổi
                 self._wander(walls, dt)
 
         elif self.rtype in ['white', 'boss']:
-            if (player.light_on or self.aggro_timer > 0) and dist < 350:
-                move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+            if (player.light_on or self.aggro_timer > 0 or is_seen_on_lvl6) and dist < 350:
+                move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                 mx = math.cos(move_angle) * self.speed
                 my = math.sin(move_angle) * self.speed
                 nx, ny = self.x + mx, self.y + my
                 if not self._hit_wall(nx, self.y, walls): self.x = nx
                 if not self._hit_wall(self.x, ny, walls): self.y = ny
             else:
-                self.dfs_path = []  # Reset path khi không đuổi
+                self.bfs_path = []  # Reset path khi không đuổi
                 self._wander(walls, dt)
                 
         elif self.rtype == 'white_giant':
             # Giant AI: Di chuyển 4 hướng chiến thuật, giữ khoảng cách bắn súng 6 nòng
-            if (player.light_on or self.aggro_timer > 0) and dist < 600:
+            if (player.light_on or self.aggro_timer > 0 or is_seen_on_lvl6) and dist < 600:
                 self.strafe_timer -= dt
                 if self.strafe_timer <= 0:
                     self.strafe_dir = random.choice([-1, 1])
@@ -1366,8 +1380,8 @@ class Robot:
                     if not self._hit_wall(nx, self.y, walls): self.x = nx
                     if not self._hit_wall(self.x, ny, walls): self.y = ny
                 elif dist > 350:
-                    # Đuổi theo: dùng đường dẫn DFS nếu có
-                    move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+                    # Đuổi theo: dùng đường dẫn BFS nếu có
+                    move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                     chase_x = math.cos(move_angle) * self.speed * 0.8
                     chase_y = math.sin(move_angle) * self.speed * 0.8
                     nx, ny = self.x + chase_x, self.y + chase_y
@@ -1392,7 +1406,7 @@ class Robot:
                     self.burst_timer = 0.0
                     self.shoot_cd = 3.0
             else:
-                self.dfs_path = []  # Reset path khi không đuổi
+                self.bfs_path = []  # Reset path khi không đuổi
                 self._wander(walls, dt)
                 
             # Xử lý bắn burst của khổng lồ
@@ -1426,7 +1440,7 @@ class Robot:
                 self.lightning_timer = random.uniform(0.6, 1.8)  # Tia sét nhấp nháy
             self.lightning_phase += dt * 8.0
 
-            if (player.light_on or self.aggro_timer > 0) and dist < 550:
+            if (player.light_on or self.aggro_timer > 0 or is_seen_on_lvl6) and dist < 550:
                 self.strafe_timer -= dt
                 if self.strafe_timer <= 0:
                     self.strafe_dir = random.choice([-1, 1])
@@ -1442,15 +1456,15 @@ class Robot:
                         sx_m += math.cos(angle_to_player + math.pi) * self.speed * 0.6
                         sy_m += math.sin(angle_to_player + math.pi) * self.speed * 0.6
                     elif dist > 320:
-                        move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+                        move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                         sx_m += math.cos(move_angle) * self.speed * 0.5
                         sy_m += math.sin(move_angle) * self.speed * 0.5
                     nx, ny = self.x + sx_m, self.y + sy_m
                     if not self._hit_wall(nx, self.y, walls): self.x = nx
                     if not self._hit_wall(self.x, ny, walls): self.y = ny
                 elif dist > 280:
-                    # Đuổi theo: dùng đường dẫn DFS nếu có
-                    move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+                    # Đuổi theo: dùng đường dẫn BFS nếu có
+                    move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                     chase_x = math.cos(move_angle) * self.speed * 0.9
                     chase_y = math.sin(move_angle) * self.speed * 0.9
                     strafe_x = math.cos(perp_angle) * self.speed * 0.5
@@ -1479,7 +1493,7 @@ class Robot:
                     self.burst_timer = 0.0
                     self.shoot_cd = 0.75
             else:
-                self.dfs_path = []  # Reset path khi không đuổi
+                self.bfs_path = []  # Reset path khi không đuổi
                 self._wander(walls, dt)
 
             # Xử lý bắn burst của robot vàng
@@ -1508,7 +1522,7 @@ class Robot:
 
         elif self.rtype == 'green':
             # === TACTICAL AI: Robot xanh lá di chuyển chiến thuật 4 hướng ===
-            if (player.light_on or self.aggro_timer > 0) and dist < 500:
+            if (player.light_on or self.aggro_timer > 0 or is_seen_on_lvl6) and dist < 500:
                 # --- Cập nhật timer tactical ---
                 self.strafe_timer -= dt
                 if self.strafe_timer <= 0:
@@ -1528,15 +1542,15 @@ class Robot:
                         sx_m += math.cos(angle_to_player + math.pi) * self.speed * 0.5
                         sy_m += math.sin(angle_to_player + math.pi) * self.speed * 0.5
                     elif dist > 300:
-                        move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+                        move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                         sx_m += math.cos(move_angle) * self.speed * 0.4
                         sy_m += math.sin(move_angle) * self.speed * 0.4
                     nx, ny = self.x + sx_m, self.y + sy_m
                     if not self._hit_wall(nx, self.y, walls): self.x = nx
                     if not self._hit_wall(self.x, ny, walls): self.y = ny
                 elif dist > 260:
-                    # Tiến về phía player kết hợp strafe nhẹ (dùng DFS)
-                    move_angle = dfs_angle if dfs_angle is not None else angle_to_player
+                    # Tiến về phía player kết hợp strafe nhẹ (dùng BFS)
+                    move_angle = bfs_angle if bfs_angle is not None else angle_to_player
                     chase_x = math.cos(move_angle) * self.speed * 0.85
                     chase_y = math.sin(move_angle) * self.speed * 0.85
                     strafe_x = math.cos(perp_angle) * self.speed * 0.4
@@ -1569,7 +1583,7 @@ class Robot:
                     self.burst_timer = 0.0
                     self.shoot_cd = 1.25
             else:
-                self.dfs_path = []  # Reset path khi không đuổi
+                self.bfs_path = []  # Reset path khi không đuổi
                 self._wander(walls, dt)
 
             # Xử lý bắn đạn trong đợt burst
@@ -1615,7 +1629,7 @@ class Robot:
             self.is_moving = False
             
         # Luôn luôn hướng mặt về phía người chơi khi nhìn thấy (đối với robot có súng), dù đang di chuyển hay đứng yên
-        can_see_player = player.light_on or self.aggro_timer > 0
+        can_see_player = player.light_on or self.aggro_timer > 0 or is_seen_on_lvl6
         if self.rtype in ['green', 'yellow', 'white_giant'] and dist < 600 and can_see_player:
             aim_deg = math.degrees(angle_to_player) % 360
             if 45 <= aim_deg < 135:
@@ -1726,6 +1740,22 @@ class Robot:
                             self.y -= overlap_y
                         else:
                             self.y += overlap_y
+
+    def _has_line_of_sight(self, player, walls):
+        x1, y1 = self.x, self.y
+        x2, y2 = player.x, player.y
+        dist = math.hypot(x2 - x1, y2 - y1)
+        if dist == 0:
+            return True
+        steps = int(max(10, dist / 15))
+        for i in range(1, steps):
+            t = i / steps
+            px = x1 + (x2 - x1) * t
+            py = y1 + (y2 - y1) * t
+            for w in walls:
+                if w.collidepoint(px, py):
+                    return False
+        return True
 
     def take_damage(self, dmg):
         self.hp -= dmg
@@ -2276,6 +2306,7 @@ class Robot:
 class Bullet:
     def __init__(self, x, y, angle, gun_type='pistol', is_enemy=False, dmg=0):
         self.x, self.y = float(x), float(y)
+        self.spawn_x, self.spawn_y = self.x, self.y
         self.angle = angle
         self.gun_type = gun_type
         self.is_enemy = is_enemy  # Đạn của robot bắn về phía người chơi
@@ -2307,14 +2338,32 @@ class Bullet:
         else:
             self.radius = BULLET_RADIUS
             
-        self.life = 2.0  # giây tồn tại tối đa
+        self.life = 4.0  # Tăng thời gian sống tối đa để không bị biến mất trước khi hết tầm bắn
         self.trail = []  # Vệt đuôi đạn cho đạn robot
+        
+        # Thiết lập tầm bắn tối đa theo loại súng
+        if is_enemy:
+            self.max_range = 600.0
+        else:
+            if gun_type == 'advanced_sniper':
+                self.max_range = 1800.0  # Súng bắn tỉa nâng cấp bắn xa nhất, vượt xa màn hình
+            elif gun_type == 'sniper':
+                self.max_range = 1350.0  # Súng bắn tỉa thường bắn cực xa
+            elif gun_type == 'smg':
+                self.max_range = 650.0   # Súng tiểu liên bắn chỉ xa theo khung hình mình chơi
+            elif gun_type == 'shotgun':
+                self.max_range = 380.0   # Shotgun bắn tầm gần đặc trưng
+            else: # pistol, v.v.
+                self.max_range = 650.0   # Tầm bắn súng lục theo khung hình chơi
 
     def update(self, walls, dt, map_w=MAP_W, map_h=MAP_H):
         self.x += self.vx
         self.y += self.vy
         self.life -= dt
-        if self.life <= 0:
+        
+        # Kiểm tra tầm bắn tối đa đã đi được
+        dist_traveled = math.hypot(self.x - self.spawn_x, self.y - self.spawn_y)
+        if dist_traveled >= self.max_range or self.life <= 0:
             self.alive = False
             return
         # Va chạm tường

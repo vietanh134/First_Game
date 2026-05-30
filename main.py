@@ -1,47 +1,28 @@
 """Stick Survivor – CR7: Đường về nhà - Main Game"""
 import pygame, sys, math, random, json, os
+
+def resource_path(relative_path):
+    """Trả về đường dẫn tuyệt đối đến tài nguyên, hoạt động cả khi chạy từ .exe (PyInstaller)"""
+    if getattr(sys, 'frozen', False):
+        # Đang chạy từ file .exe đã đóng gói
+        # Thử tìm trong thư mục nội bộ/tạm thời của PyInstaller (thường là _internal hoặc thư mục giải nén)
+        mei_path = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)), relative_path)
+        if os.path.exists(mei_path):
+            return mei_path
+        # Nếu không có, mặc định ở thư mục chứa file .exe (phù hợp cho save_data.json hoặc file cấu hình ngoài)
+        return os.path.join(os.path.dirname(sys.executable), relative_path)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_path, relative_path)
+
 from constants import *
 from entities import Player, Robot, Bullet, Item, Particle, PlantedLight
 from levels import Level
 from ui import *
 try:
-    from pathfinder import bfs as pf_bfs, astar as pf_astar
+    from pathfinder import bfs as pf_bfs, astar as pf_astar, dfs as pf_dfs
 except ImportError:
-    pf_bfs = pf_astar = None
-
-# Tự động sao chép các ảnh vũ khí mới tải về vào thư mục game
-try:
-    import shutil
-    _brain_dir = r"C:\Users\LENOVO\.gemini\antigravity\brain\b965e400-f776-435f-bd61-c41cdb30fc25"
-    _dest_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Khôi phục ảnh weapon_ui.png gốc (Đã tắt để không đè lên ảnh mới của người dùng)
-    # _backup_src = os.path.join(_brain_dir, ".tempmediaStorage", "media_b965e400-f776-435f-bd61-c41cdb30fc25_1779209190656.png")
-    # if os.path.exists(_backup_src):
-    #     for _old_file in ["weapon_ui.png", "weapon_ui_backup.png"]:
-    #         _dest_old_path = os.path.join(_dest_dir, _old_file)
-    #         shutil.copy(_backup_src, _dest_old_path)
-            
-    _mapping = {
-        "media__1779207651718.png": "pistol.png",
-        "media__1779207657799.png": "shotgun.png",
-        "media__1779207911074.png": "smg.png",
-        "media__1779207920132.png": "sniper.png",
-        "media__1779207924813.png": "advanced_sniper.png"
-    }
-    for _src_name, _dest_name in _mapping.items():
-        _src_path = os.path.join(_brain_dir, _src_name)
-        _dest_path = os.path.join(_dest_dir, _dest_name)
-        if os.path.exists(_src_path):
-            shutil.copy(_src_path, _dest_path)
-            
-    # Nạp lại ảnh bảng trang bị mới trực tiếp vào biến toàn cục của module ui
-    import ui
-    _ui_path = os.path.join(_dest_dir, 'weapon_ui.png')
-    if os.path.exists(_ui_path):
-        ui.WEAPON_UI_IMG = pygame.image.load(_ui_path)
-except Exception as e:
-    pass
+    pf_bfs = pf_astar = pf_dfs = None
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -49,8 +30,11 @@ pygame.display.set_caption("Ngọn Đèn Cuối Cùng")
 clock = pygame.time.Clock()
 
 class Game:
-    # Đường dẫn file lưu tiến trình (cùng thư mục với main.py)
-    SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'save_data.json')
+    # Đường dẫn file lưu tiến trình (luôn ở cùng thư mục với file .exe khi chạy)
+    if getattr(sys, 'frozen', False):
+        SAVE_FILE = os.path.join(os.path.dirname(sys.executable), 'save_data.json')
+    else:
+        SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'save_data.json')
 
     def __init__(self):
         self.state = 'story'  # Bắt đầu từ phần cốt truyện mở đầu
@@ -97,29 +81,43 @@ class Game:
         self.preview_pet = 'mini_robot'
 
         # Chế độ tự chơi (autoplay)
-        self.autoplay_mode = None   # None | 'bfs' | 'astar'
+        self.autoplay_mode = None   # None | 'bfs' | 'astar' | 'dfs'
         self.autoplay_path = []     # Danh sách waypoints hiện tại
         self.autoplay_timer = 0.0   # Timer tính lại đường
+        self.autoplay_seeking_heal = False
+
+        # Cài đặt âm lượng sảnh & màn chơi
+        self.lobby_volume = 0.25
+        self.game_volume = 0.28
+        self.settings_tab = 'sound'  # 'sound' hoặc 'controls'
+        self.settings_sel = 0        # 0: lobby, 1: game
 
         # Tải tiến trình đã lưu từ file
         self._load_progress()
-
-        # Tải nhạc sảnh chờ
-        self.music_loaded = False
+        
+        # Tiền xử lý giao diện vũ khí kết hợp để tránh khựng hình khi mở menu/balo
         try:
-            pygame.mixer.init()
-            music_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "new_bg_music.mp3")
-            if os.path.exists(music_path):
-                pygame.mixer.music.load(music_path)
-                pygame.mixer.music.set_volume(0.25)
-                self.music_loaded = True
+            get_combined_weapon_ui(self.unlocked_weapons)
         except Exception:
             pass
+
+        # Tải nhạc sảnh chờ & nhạc màn chơi
+        self.music_loaded = False
+        self.current_playing_track = None  # Theo dõi track nhạc đang phát: 'lobby' | 'game'
+        self.game_music_start_time = 0.0  # Lưu thời điểm bắt đầu phát nhạc màn chơi
+        try:
+            pygame.mixer.init()
+            # Đảm bảo các file nhạc tồn tại
+            self.lobby_music_path = resource_path("new_bg_music.mp3")
+            self.game_music_path = resource_path("contra_stage_music.mp3")
+            self.music_loaded = True
+        except Exception as e:
+            print(f"[WARN] Không thể khởi tạo pygame mixer: {e}")
 
         # Tải âm thanh lướt qua (điều hướng)
         self.nav_sound = None
         try:
-            nav_sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ting.wav")
+            nav_sound_path = resource_path("ting.wav")
             if os.path.exists(nav_sound_path):
                 self.nav_sound = pygame.mixer.Sound(nav_sound_path)
                 self.nav_sound.set_volume(0.2)
@@ -128,7 +126,7 @@ class Game:
 
         self.accept_sound = None
         try:
-            accept_sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accept.wav")
+            accept_sound_path = resource_path("accept.wav")
             if os.path.exists(accept_sound_path):
                 self.accept_sound = pygame.mixer.Sound(accept_sound_path)
                 self.accept_sound.set_volume(0.5)
@@ -172,9 +170,12 @@ class Game:
                 self.coins = data.get('coins', self.coins)
                 self.unlocked_pets = data.get('unlocked_pets', self.unlocked_pets)
                 self.selected_pet = data.get('selected_pet', self.selected_pet)
-            print("[INFO] Tải tiến trình thành công từ save_data.json")
+                # Tải thông số âm lượng
+                self.lobby_volume = max(0.0, min(1.0, data.get('lobby_volume', self.lobby_volume)))
+                self.game_volume = max(0.0, min(1.0, data.get('game_volume', self.game_volume)))
+            print("[INFO] Loaded progress successfully from save_data.json")
         except Exception as e:
-            print(f"[WARN] Lỗi khi tải file save: {e}. Sử dụng tiến trình hiện tại.")
+            print(f"[WARN] Error loading save file: {e}")
 
     def _save_progress(self):
         """Lưu tiến trình vào file JSON một cách an toàn và ghi đè nguyên tử"""
@@ -187,7 +188,9 @@ class Game:
                 'selected_weapon': self.selected_weapon,
                 'coins': self.coins,
                 'unlocked_pets': self.unlocked_pets,
-                'selected_pet': self.selected_pet
+                'selected_pet': self.selected_pet,
+                'lobby_volume': self.lobby_volume,
+                'game_volume': self.game_volume
             }
             temp_file = self.SAVE_FILE + ".tmp"
             with open(temp_file, 'w', encoding='utf-8') as f:
@@ -195,9 +198,9 @@ class Game:
             if os.path.exists(self.SAVE_FILE):
                 os.remove(self.SAVE_FILE)
             os.rename(temp_file, self.SAVE_FILE)
-            print("[INFO] Lưu tiến trình thành công vào save_data.json")
+            print("[INFO] Saved progress successfully to save_data.json")
         except Exception as e:
-            print(f"[WARN] Không thể lưu tiến trình: {e}")
+            print(f"[WARN] Cannot save progress: {e}")
 
     def trigger_menu_action(self, idx):
         if idx == 0:
@@ -208,7 +211,9 @@ class Game:
         elif idx == 2:
             self.state = 'items'
         elif idx == 3:
-            self.state = 'controls'
+            self.state = 'settings'
+            self.settings_tab = 'sound'
+            self.settings_sel = 0
         elif idx == 4:
             pygame.quit()
             sys.exit()
@@ -227,10 +232,11 @@ class Game:
         # Cấu hình đạn theo vũ khí đã chọn trong Shop súng
         gun_info = GUNS_DATA[self.selected_weapon]
         self.player.max_ammo_clip = gun_info['clip_size']
-        self.player.ammo_clip = 9999  # Infinite ammo
-        self.player.max_ammo_reserve = 9999
-        self.player.ammo_reserve = 9999
+        self.player.ammo_clip = gun_info['clip_size']  # Đầy băng khi vào trận
+        self.player.max_ammo_reserve = 999999
+        self.player.ammo_reserve = 999999  # Vô hạn băng đạn dự trữ
         
+        self.player.light_on = (num != 5)
         self.bullets = []
         self.enemy_bullets = []  # Reset đạn robot mỗi khi vào màn mới
         self.particles = []
@@ -243,6 +249,10 @@ class Game:
         self.level_intro_timer = 0
         self.level_intro_start_tick = pygame.time.get_ticks()
         self.item_spawn_timer = 5.0  # Spawn item đầu tiên sau 5 giây chơi
+        
+        # Luôn luôn tắt chế độ tự chơi (autoplay) khi sang màn mới
+        self.autoplay_mode = None
+        self.autoplay_path = []
 
     def handle_events(self):
         for ev in pygame.event.get():
@@ -351,9 +361,72 @@ class Game:
                             self.start_level(self.level_sel)
                 continue
 
-            if self.state in ('controls', 'achievements', 'intro'):
+            if self.state in ('achievements', 'intro'):
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
                     self.state = 'menu'
+                continue
+
+            if self.state == 'settings':
+                if ev.type == pygame.KEYDOWN:
+                    if ev.key == pygame.K_ESCAPE:
+                        self.state = 'menu'
+                        self._save_progress()
+                        self.play_accept_sound()
+                    elif ev.key == pygame.K_TAB:
+                        self.settings_tab = 'controls' if self.settings_tab == 'sound' else 'sound'
+                        self.play_nav_sound()
+                    elif ev.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                        if self.settings_tab == 'sound':
+                            delta = -0.05 if ev.key == pygame.K_LEFT else 0.05
+                            if self.settings_sel == 0:
+                                self.lobby_volume = max(0.0, min(1.0, round(self.lobby_volume + delta, 2)))
+                                if self.music_loaded and self.current_playing_track == 'lobby':
+                                    pygame.mixer.music.set_volume(self.lobby_volume)
+                            else:
+                                self.game_volume = max(0.0, min(1.0, round(self.game_volume + delta, 2)))
+                                if self.music_loaded and self.current_playing_track == 'game':
+                                    pygame.mixer.music.set_volume(self.game_volume)
+                            self.play_nav_sound()
+                        else:
+                            self.settings_tab = 'sound' if self.settings_tab == 'controls' else 'controls'
+                            self.play_nav_sound()
+                    elif ev.key == pygame.K_UP:
+                        if self.settings_tab == 'sound':
+                            self.settings_sel = (self.settings_sel - 1) % 2
+                            self.play_nav_sound()
+                    elif ev.key == pygame.K_DOWN:
+                        if self.settings_tab == 'sound':
+                            self.settings_sel = (self.settings_sel + 1) % 2
+                            self.play_nav_sound()
+                elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    mx, my = ev.pos
+                    # Click nút đóng (X)
+                    if 35 <= my <= 75 and 1110 <= mx <= 1150:
+                        self.state = 'menu'
+                        self._save_progress()
+                        self.play_accept_sound()
+                    # Click chuyển Tab
+                    elif 105 <= my <= 155:
+                        if 320 <= mx <= 590:
+                            self.settings_tab = 'sound'
+                            self.play_accept_sound()
+                        elif 610 <= mx <= 880:
+                            self.settings_tab = 'controls'
+                            self.play_accept_sound()
+                    # Click thanh trượt âm lượng
+                    elif self.settings_tab == 'sound':
+                        if 270 <= my <= 320 and 450 <= mx <= 850:
+                            self.lobby_volume = max(0.0, min(1.0, round((mx - 450) / 400.0, 2)))
+                            if self.music_loaded and self.current_playing_track == 'lobby':
+                                pygame.mixer.music.set_volume(self.lobby_volume)
+                            self.settings_sel = 0
+                            self.play_nav_sound()
+                        elif 390 <= my <= 440 and 450 <= mx <= 850:
+                            self.game_volume = max(0.0, min(1.0, round((mx - 450) / 400.0, 2)))
+                            if self.music_loaded and self.current_playing_track == 'game':
+                                pygame.mixer.music.set_volume(self.game_volume)
+                            self.settings_sel = 1
+                            self.play_nav_sound()
                 continue
 
             if self.state == 'items':
@@ -496,22 +569,76 @@ class Game:
             if self.state == 'paused':
                 if ev.type == pygame.KEYDOWN:
                     if ev.key == pygame.K_ESCAPE:
+                        self._save_progress()
                         self.state = 'playing'
                     elif ev.key == pygame.K_UP:
-                        self.pause_sel = (self.pause_sel - 1) % 3
+                        self.pause_sel = (self.pause_sel - 1) % 5
                         self.play_nav_sound()
                     elif ev.key == pygame.K_DOWN:
-                        self.pause_sel = (self.pause_sel + 1) % 3
+                        self.pause_sel = (self.pause_sel + 1) % 5
                         self.play_nav_sound()
+                    elif ev.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                        # Điều chỉnh âm lượng khi đang chọn slider
+                        delta = -0.05 if ev.key == pygame.K_LEFT else 0.05
+                        if self.pause_sel == 3:  # Lobby volume slider
+                            self.lobby_volume = max(0.0, min(1.0, round(self.lobby_volume + delta, 2)))
+                            if self.music_loaded and self.current_playing_track == 'lobby':
+                                pygame.mixer.music.set_volume(self.lobby_volume)
+                            self.play_nav_sound()
+                        elif self.pause_sel == 4:  # Game volume slider
+                            self.game_volume = max(0.0, min(1.0, round(self.game_volume + delta, 2)))
+                            if self.music_loaded and self.current_playing_track == 'game':
+                                pygame.mixer.music.set_volume(self.game_volume)
+                            self.play_nav_sound()
                     elif ev.key == pygame.K_RETURN:
                         self.play_accept_sound()
                         if self.pause_sel == 0:  # TIẾP TỤC
+                            self._save_progress()
                             self.state = 'playing'
                         elif self.pause_sel == 1:  # CHƠI LẠI
                             self.robots_killed = 0
                             self.start_level(self.level_num)
                         elif self.pause_sel == 2:  # THOÁT GAME
+                            self._save_progress()
                             self.state = 'menu'; self.menu_sel = 0
+                elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    mx, my = ev.pos
+                    box_w, box_h = 420, 420
+                    box_x = (WIDTH - box_w) // 2
+                    box_y = (HEIGHT - box_h) // 2
+                    # Click vào 3 nút chức năng
+                    for i in range(3):
+                        btn_y = box_y + 80 + i * 50
+                        btn_rect = pygame.Rect(WIDTH // 2 - 110, btn_y - 18, 220, 36)
+                        if btn_rect.collidepoint(mx, my):
+                            self.play_accept_sound()
+                            if i == 0:
+                                self._save_progress()
+                                self.state = 'playing'
+                            elif i == 1:
+                                self.robots_killed = 0
+                                self.start_level(self.level_num)
+                            elif i == 2:
+                                self._save_progress()
+                                self.state = 'menu'; self.menu_sel = 0
+                    # Click vào slider lobby volume
+                    slider_x = box_x + 60
+                    slider_w = box_w - 120
+                    lobby_slider_y = box_y + 265
+                    if lobby_slider_y - 5 <= my <= lobby_slider_y + 15 and slider_x <= mx <= slider_x + slider_w:
+                        self.lobby_volume = max(0.0, min(1.0, round((mx - slider_x) / slider_w, 2)))
+                        if self.music_loaded and self.current_playing_track == 'lobby':
+                            pygame.mixer.music.set_volume(self.lobby_volume)
+                        self.pause_sel = 3
+                        self.play_nav_sound()
+                    # Click vào slider game volume
+                    game_slider_y = box_y + 335
+                    if game_slider_y - 5 <= my <= game_slider_y + 15 and slider_x <= mx <= slider_x + slider_w:
+                        self.game_volume = max(0.0, min(1.0, round((mx - slider_x) / slider_w, 2)))
+                        if self.music_loaded and self.current_playing_track == 'game':
+                            pygame.mixer.music.set_volume(self.game_volume)
+                        self.pause_sel = 4
+                        self.play_nav_sound()
                 continue
 
             if self.state == 'playing':
@@ -519,7 +646,8 @@ class Game:
                     if ev.key == pygame.K_ESCAPE:
                         self.state = 'paused'; self.pause_sel = 0; return
                     if ev.key == pygame.K_SPACE:  # Bật/tắt đèn (không tốn năng lượng)
-                        self.player.light_on = not self.player.light_on
+                        if self.level_num != 5:
+                            self.player.light_on = not self.player.light_on
                     if ev.key == pygame.K_l:  # Đổi vũ khí (kiếm <-> súng)
                         if self.player.weapon == 'sword':
                             self.player.weapon = 'gun'
@@ -551,7 +679,7 @@ class Game:
                         else:
                             self.autoplay_mode = 'bfs'
                             self.autoplay_path = []
-                            self.player.light_on = True
+                            self.player.light_on = (self.level_num != 5)
                     if ev.key == pygame.K_4:  # Phím 4 – A* auto-play
                         if self.autoplay_mode == 'astar':
                             self.autoplay_mode = None
@@ -559,7 +687,15 @@ class Game:
                         else:
                             self.autoplay_mode = 'astar'
                             self.autoplay_path = []
-                            self.player.light_on = True
+                            self.player.light_on = (self.level_num != 5)
+                    if ev.key == pygame.K_5:  # Phím 5 – DFS auto-play
+                        if self.autoplay_mode == 'dfs':
+                            self.autoplay_mode = None
+                            self.autoplay_path = []
+                        else:
+                            self.autoplay_mode = 'dfs'
+                            self.autoplay_path = []
+                            self.player.light_on = (self.level_num != 5)
                     if ev.key == pygame.K_r:  # Nạp đạn (Reload)
                         if self.player.weapon == 'gun' and not self.player.is_reloading:
                             if self.player.ammo_clip < self.player.max_ammo_clip:
@@ -641,24 +777,35 @@ class Game:
                     (220, 220, 255), 8)
         else:
             # === BẮN SÚNG ===
-            if self.shoot_cd <= 0 and self.player.alive and not self.player.is_reloading:
-                    # Infinite ammo - no clip check needed
+            if self.shoot_cd <= 0 and self.player.alive:
+                if self.player.ammo_clip <= 0:
+                    # Hết đạn trong băng -> tự động nạp đạn
+                    if not self.player.is_reloading and self.player.ammo_reserve > 0:
+                        self.player.is_reloading = True
+                        gun_info = GUNS_DATA[self.selected_weapon]
+                        self.player.reload_timer = gun_info['reload_time']
+                        self._spawn_particles(self.player.x, self.player.y, CYAN, 6)
+                elif not self.player.is_reloading:
+                    # Còn đạn trong băng -> bắn bình thường và trừ đạn
+                    self.player.ammo_clip -= 1
                     gun_info = GUNS_DATA[self.selected_weapon]
                     self.shoot_cd = gun_info['fire_rate']
                     self.player.gun_flash_timer = 0.15  # Lóe sáng đầu nòng
                     self.player.trigger_shoot_anim()  # Animation bắn sprite
                     
-                    # Bắn đạn
+                    # Bắn đạn - sinh đạn ở đầu nòng súng (30px phía trước) để không dẫm lên đạn khi di chuyển
+                    muzzle_dist = 30
+                    bx = self.player.x + math.cos(self.player.angle) * muzzle_dist
+                    by = self.player.y + math.sin(self.player.angle) * muzzle_dist
                     if self.selected_weapon == 'shotgun':
                         # Bắn 4 tia hình quạt lệch nhau
                         for offset in [-15, -5, 5, 15]:
                             rad = math.radians(offset)
-                            self.bullets.append(Bullet(self.player.x, self.player.y, self.player.angle + rad, self.selected_weapon))
+                            self.bullets.append(Bullet(bx, by, self.player.angle + rad, self.selected_weapon))
                     else:
-                        self.bullets.append(Bullet(self.player.x, self.player.y, self.player.angle, self.selected_weapon))
+                        self.bullets.append(Bullet(bx, by, self.player.angle, self.selected_weapon))
                         
-                    self._spawn_particles(self.player.x + math.cos(self.player.angle)*15,
-                                        self.player.y + math.sin(self.player.angle)*15, ORANGE, 5)
+                    self._spawn_particles(bx, by, ORANGE, 5)
 
     def _spawn_particles(self, x, y, color, count):
         for _ in range(count):
@@ -679,8 +826,9 @@ class Game:
             itype = random.choice(weighted_types)
             self.level.items.append(Item(r.x, r.y, itype))
 
-    def update(self):
-        dt = 1.0 / FPS
+    def update(self, dt=None):
+        if dt is None:
+            dt = 1.0 / FPS
         if self.state != 'playing':
             if self.shop_error_timer > 0:
                 self.shop_error_timer -= dt
@@ -690,6 +838,11 @@ class Game:
 
         if self.shoot_cd > 0: self.shoot_cd -= dt
         keys = pygame.key.get_pressed()
+        if self.autoplay_mode:
+            class DummyKeys:
+                def __getitem__(self, item):
+                    return False
+            keys = DummyKeys()
         mx, my = pygame.mouse.get_pos()
         mouse_buttons = pygame.mouse.get_pressed()
 
@@ -700,25 +853,39 @@ class Game:
             self.player.angle = math.atan2(world_my - self.player.y, world_mx - self.player.x)
 
         # ---- GIỮ CHUỘT TRÁI → BẮN LIÊN TỤC (mọi loại súng) ----
-        if mouse_buttons[0] and self.player.weapon == 'gun' and self.shoot_cd <= 0 and self.player.alive and not self.player.is_reloading:
-                # Infinite ammo - no clip check needed
+        if mouse_buttons[0] and self.player.weapon == 'gun' and self.shoot_cd <= 0 and self.player.alive:
+            if self.player.ammo_clip <= 0:
+                # Hết đạn trong băng -> tự động nạp đạn
+                if not self.player.is_reloading and self.player.ammo_reserve > 0:
+                    self.player.is_reloading = True
+                    gun_info = GUNS_DATA[self.selected_weapon]
+                    self.player.reload_timer = gun_info['reload_time']
+                    self._spawn_particles(self.player.x, self.player.y, CYAN, 6)
+            elif not self.player.is_reloading:
+                # Còn đạn trong băng -> bắn bình thường và trừ đạn
+                self.player.ammo_clip -= 1
                 gun_info = GUNS_DATA[self.selected_weapon]
                 self.shoot_cd = gun_info['fire_rate']
                 self.player.gun_flash_timer = 0.15
                 self.player.trigger_shoot_anim()
+                muzzle_dist = 30
+                bx = self.player.x + math.cos(self.player.angle) * muzzle_dist
+                by = self.player.y + math.sin(self.player.angle) * muzzle_dist
                 if self.selected_weapon == 'shotgun':
                     for offset in [-15, -5, 5, 15]:
                         rad = math.radians(offset)
-                        self.bullets.append(Bullet(self.player.x, self.player.y, self.player.angle + rad, self.selected_weapon))
+                        self.bullets.append(Bullet(bx, by, self.player.angle + rad, self.selected_weapon))
                 else:
-                    self.bullets.append(Bullet(self.player.x, self.player.y, self.player.angle, self.selected_weapon))
-                self._spawn_particles(self.player.x + math.cos(self.player.angle)*15,
-                                      self.player.y + math.sin(self.player.angle)*15, ORANGE, 5)
+                    self.bullets.append(Bullet(bx, by, self.player.angle, self.selected_weapon))
+                self._spawn_particles(bx, by, ORANGE, 5)
 
         # Tự động spawn thêm vật phẩm ngẫu nhiên theo thời gian chơi
         self.item_spawn_timer -= dt
         if self.item_spawn_timer <= 0:
-            self.item_spawn_timer = random.uniform(8.0, 15.0)  # Tầm 8 - 15 giây spawn 1 cái
+            if self.level_num == 0:
+                self.item_spawn_timer = random.uniform(35.0, 60.0)  # Sinh rất ít ở màn 1
+            else:
+                self.item_spawn_timer = random.uniform(8.0, 15.0)  # Tầm 8 - 15 giây spawn 1 cái
             self._spawn_dynamic_item()
 
         # Đèn được bật/tắt bằng Space (toggle), không tốn năng lượng
@@ -728,14 +895,36 @@ class Game:
         ice = (self.level_num == 4)
         self.player.update(keys, mx, my, self.cam_x, self.cam_y, self.level.walls, dt, map_w=self.level.map_w, map_h=self.level.map_h, ice_level=ice)
 
-        # ---- AUTO-PLAY (BFS / A*) - TURBO MODE ----
+        # ---- AUTO-PLAY (BFS / A* / DFS) - TURBO MODE ----
         if self.autoplay_mode and self.player.alive:
-            pf_fn = pf_bfs if self.autoplay_mode == 'bfs' else pf_astar
+            if self.autoplay_mode == 'bfs':
+                pf_fn = pf_bfs
+            elif self.autoplay_mode == 'astar':
+                pf_fn = pf_astar
+            else:
+                pf_fn = pf_dfs
             alive_robots = [r for r in self.level.robots if r.alive]
+            
+            # --- Cơ chế Chống kẹt (Anti-Stuck Mechanism) ---
+            if not hasattr(self, 'autoplay_last_pos'):
+                self.autoplay_last_pos = (self.player.x, self.player.y)
+                self.autoplay_stuck_ticks = 0
+            
+            dist_moved = math.hypot(self.player.x - self.autoplay_last_pos[0], self.player.y - self.autoplay_last_pos[1])
+            self.autoplay_last_pos = (self.player.x, self.player.y)
+            
+            if dist_moved < 0.5:
+                self.autoplay_stuck_ticks += 1
+                if self.autoplay_stuck_ticks > 12:  # Bị kẹt khoảng 0.2 giây
+                    self.autoplay_path = []          # Ép tính toán lại đường đi mới ngay lập tức
+                    self.autoplay_stuck_ticks = 0
+            else:
+                self.autoplay_stuck_ticks = 0
+
+            # --- SĂN ĐUỔI VÀ TIÊU DIỆT KẺ ĐỊCH NHANH NHẤT ---
             if not alive_robots:
-                self.autoplay_mode = None  # Tất cả robot chết → tắt chế độ
+                self.autoplay_mode = None
             elif pf_fn:
-                # Chọn robot gần nhất
                 target_r = min(alive_robots, key=lambda r: math.hypot(r.x - self.player.x, r.y - self.player.y))
                 self.autoplay_timer -= dt
                 if self.autoplay_timer <= 0 or not self.autoplay_path:
@@ -744,35 +933,47 @@ class Game:
                         (target_r.x, target_r.y),
                         self.level.walls, self.level.map_w, self.level.map_h
                     )
-                    self.autoplay_timer = 0.3  # Tính lại nhanh hơn (0.3s thay vì 0.8s)
-
-                # Di chuyển theo waypoint - tốc độ nhanh gấp 2.5
-                if self.autoplay_path:
-                    wp_x, wp_y = self.autoplay_path[0]
-                    move_angle = math.atan2(wp_y - self.player.y, wp_x - self.player.x)
-                    spd = self.player.speed * 1.8  # Tốc độ vừa phải
-                    dx = math.cos(move_angle) * spd
-                    dy = math.sin(move_angle) * spd
-                    walls_l = self.level.walls
-                    import pygame as _pg
-                    nx = self.player.x + dx
-                    ny = self.player.y + dy
-                    pr = self.player.radius
-                    def hits_wall(px, py):
-                        r = _pg.Rect(px - pr, py - pr, pr*2, pr*2)
-                        return any(r.colliderect(w) for w in walls_l)
-                    if not hits_wall(nx, self.player.y): self.player.x = nx
-                    if not hits_wall(self.player.x, ny): self.player.y = ny
-                    # Xóa waypoint đã đến gần (threshold nhỏ hơn = chính xác hơn)
-                    if math.hypot(wp_x - self.player.x, wp_y - self.player.y) < 18:
-                        self.autoplay_path.pop(0)
-
-                # Tự động nhắm và bắn robot mục tiêu - tầm bắn xa hơn
+                    self.autoplay_timer = 0.3
+                
                 dist_target = math.hypot(target_r.x - self.player.x, target_r.y - self.player.y)
-                angle_to_target = math.atan2(target_r.y - self.player.y, target_r.x - self.player.x)
-                self.player.angle = angle_to_target
-                if dist_target < 500 and self.player.weapon == 'gun':
+                self.player.angle = math.atan2(target_r.y - self.player.y, target_r.x - self.player.x)
+                if dist_target < 650 and self.player.weapon == 'gun' and not self.player.is_reloading and self.player.ammo_clip > 0:
                     self.trigger_attack()
+            
+            # --- Di chuyển chung theo waypoint đường dẫn thẳng và siêu tốc ---
+            if self.autoplay_path:
+                wp_x, wp_y = self.autoplay_path[0]
+                move_angle = math.atan2(wp_y - self.player.y, wp_x - self.player.x)
+                
+                # Tốc độ di chuyển auto-play siêu tốc quét sạch bản đồ nhanh nhất
+                spd = self.player.speed * 2.38
+                dx = math.cos(move_angle) * spd
+                dy = math.sin(move_angle) * spd
+                walls_l = self.level.walls
+                import pygame as _pg
+                nx = self.player.x + dx
+                ny = self.player.y + dy
+                pr = self.player.radius
+                def hits_wall(px, py):
+                    r = _pg.Rect(px - pr, py - pr, pr*2, pr*2)
+                    return any(r.colliderect(w) for w in walls_l)
+                if not hits_wall(nx, self.player.y): self.player.x = nx
+                if not hits_wall(self.player.x, ny): self.player.y = ny
+                # Xóa waypoint đã đến gần
+                if math.hypot(wp_x - self.player.x, wp_y - self.player.y) < 18:
+                    self.autoplay_path.pop(0)
+
+            # Tự động chuyển sang súng để bắn
+            if self.player.weapon != 'gun':
+                self.player.weapon = 'gun'
+
+            # Tự động nạp đạn (Reload) khi hết đạn trong băng
+            if self.player.ammo_clip == 0 and not self.player.is_reloading:
+                if self.player.ammo_reserve > 0:
+                    self.player.is_reloading = True
+                    gun_info = GUNS_DATA[self.selected_weapon]
+                    self.player.reload_timer = gun_info['reload_time']
+                    self._spawn_particles(self.player.x, self.player.y, CYAN, 6)
         if not self.player.alive:
 
             self.state = 'gameover'
@@ -782,13 +983,14 @@ class Game:
         # Camera
         self.cam_x = self.player.x - WIDTH // 2
         self.cam_y = self.player.y - HEIGHT // 2
+        
         if self.level.map_w < WIDTH:
-            self.cam_x = (self.level.map_w - WIDTH) // 2
+            self.cam_x = 0  # Không gán giá trị âm
         else:
             self.cam_x = max(0, min(self.level.map_w - WIDTH, self.cam_x))
             
         if self.level.map_h < HEIGHT:
-            self.cam_y = (self.level.map_h - HEIGHT) // 2
+            self.cam_y = 0  # Không gán giá trị âm
         else:
             self.cam_y = max(0, min(self.level.map_h - HEIGHT, self.cam_y))
 
@@ -871,9 +1073,91 @@ class Game:
         for r in self.level.robots:
             if not r.alive: continue
             in_light = self._is_in_player_light(r.x, r.y)
-            shot = r.update(self.player, self.level.walls, dt, in_light, map_w=self.level.map_w, map_h=self.level.map_h)
+            shot = r.update(self.player, self.level.walls, dt, in_light, map_w=self.level.map_w, map_h=self.level.map_h, level_num=self.level_num)
             if shot is not None:
                 self.enemy_bullets.append(shot)
+
+        # Xử lý đẩy nhau giữa các Robot để không bị đè đống lên nhau (mutual separation push)
+        for i in range(len(self.level.robots)):
+            r1 = self.level.robots[i]
+            if not r1.alive: continue
+            for j in range(i + 1, len(self.level.robots)):
+                r2 = self.level.robots[j]
+                if not r2.alive: continue
+                dist = math.hypot(r2.x - r1.x, r2.y - r1.y)
+                min_dist = r1.radius + r2.radius
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    if dist > 0:
+                        dx = (r2.x - r1.x) / dist
+                        dy = (r2.y - r1.y) / dist
+                    else:
+                        dx = random.choice([-1, 1])
+                        dy = random.choice([-1, 1])
+                        ln = math.hypot(dx, dy)
+                        dx, dy = dx / ln, dy / ln
+                    
+                    # Đẩy nhẹ mỗi bên một nửa khoảng cách chồng lấn
+                    push_x = dx * overlap * 0.5
+                    push_y = dy * overlap * 0.5
+                    
+                    # Đẩy r1 đi ngược hướng
+                    if not r1._hit_wall(r1.x - push_x, r1.y, self.level.walls):
+                        r1.x -= push_x
+                    if not r1._hit_wall(r1.x, r1.y - push_y, self.level.walls):
+                        r1.y -= push_y
+                    r1._clamp(self.level.map_w, self.level.map_h)
+                        
+                     # Đẩy r2 đi cùng hướng
+                    if not r2._hit_wall(r2.x + push_x, r2.y, self.level.walls):
+                        r2.x += push_x
+                    if not r2._hit_wall(r2.x, r2.y + push_y, self.level.walls):
+                        r2.y += push_y
+                    r2._clamp(self.level.map_w, self.level.map_h)
+
+        # Xử lý đẩy nhau giữa Player và các Robot để không bao giờ đè lên nhau (Player-Robot separation)
+        if self.player.alive:
+            for r in self.level.robots:
+                if not r.alive: continue
+                dist = math.hypot(r.x - self.player.x, r.y - self.player.y)
+                min_dist = self.player.radius + r.radius
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    if dist > 0:
+                        dx = (r.x - self.player.x) / dist
+                        dy = (r.y - self.player.y) / dist
+                    else:
+                        dx = random.choice([-1, 1])
+                        dy = random.choice([-1, 1])
+                        ln = math.hypot(dx, dy)
+                        dx, dy = dx / ln, dy / ln
+                    
+                    # Đẩy nhẹ mỗi bên một nửa khoảng cách chồng lấn
+                    push_x = dx * overlap * 0.5
+                    push_y = dy * overlap * 0.5
+                    
+                    # Đẩy player ngược hướng
+                    import pygame as _pg
+                    pr = self.player.radius
+                    def player_hits_wall(px, py):
+                        rect = _pg.Rect(px - pr, py - pr, pr*2, pr*2)
+                        return any(rect.colliderect(w) for w in self.level.walls)
+                    
+                    if not player_hits_wall(self.player.x - push_x, self.player.y):
+                        self.player.x -= push_x
+                    if not player_hits_wall(self.player.x, self.player.y - push_y):
+                        self.player.y -= push_y
+                    
+                    # Giới hạn người chơi trong map
+                    self.player.x = max(pr, min(self.level.map_w - pr, self.player.x))
+                    self.player.y = max(pr, min(self.level.map_h - pr, self.player.y))
+                        
+                    # Đẩy robot cùng hướng
+                    if not r._hit_wall(r.x + push_x, r.y, self.level.walls):
+                        r.x += push_x
+                    if not r._hit_wall(r.x, r.y + push_y, self.level.walls):
+                        r.y += push_y
+                    r._clamp(self.level.map_w, self.level.map_h)
 
         # Cập nhật đạn robot (enemy bullets)
         for eb in self.enemy_bullets:
@@ -953,6 +1237,10 @@ class Game:
         # Kiểm tra hết robot -> qua màn
         alive_robots = sum(1 for r in self.level.robots if r.alive)
         if alive_robots == 0:
+            # Tự động ngắt thuật toán autoplay khi hết màn
+            self.autoplay_mode = None
+            self.autoplay_path = []
+            
             # Mở khóa màn tiếp theo
             if self.level_num + 2 > self.levels_unlocked:
                 self.levels_unlocked = min(6, self.level_num + 2)
@@ -979,6 +1267,10 @@ class Game:
 
     def _is_visible(self, ox, oy):
         """Kiểm tra đối tượng có nhìn thấy được không (trong vùng sáng hoặc gần)"""
+        # Màn 1 & 2: sương mù mờ ảo nhưng vẫn thấy mờ mờ tất cả địch
+        # Màn 6: sáng hoàn toàn, thấy rõ ràng tất cả
+        if self.level_num in (0, 1, 5):
+            return True
         d = math.hypot(ox - self.player.x, oy - self.player.y)
         if d < DARK_RADIUS: return True
         if self.player.light_on and self._is_in_player_light(ox, oy): return True
@@ -1005,7 +1297,7 @@ class Game:
                                  self.unlocked_pets, self.selected_pet, self.coins, self.player_skin, (mx, my), anim_t)
             return
         if self.state == 'level_select': draw_level_select(screen, self.level_sel, self.levels_unlocked); return
-        if self.state == 'controls': draw_controls_screen(screen); return
+        if self.state == 'settings': draw_settings_screen(screen, self.lobby_volume, self.game_volume, self.settings_tab, self.settings_sel); return
         if self.state == 'items':
             draw_shop_screen(screen, self.selected_weapon, self.unlocked_weapons, self.coins, self.preview_weapon, self.shop_error_timer,
                              self.unlocked_pets, self.selected_pet, self.shop_tab, self.preview_pet, self.player_skin)
@@ -1013,77 +1305,91 @@ class Game:
         if self.state == 'achievements': draw_achievements_screen(screen, self.robots_killed); return
         if self.state == 'intro': draw_intro_screen(screen); return
 
+        # Tọa độ bù trừ offset khi bản đồ nhỏ hơn kích thước màn hình (căn giữa)
+        offset_x = (WIDTH - self.level.map_w) // 2 if self.level.map_w < WIDTH else 0
+        offset_y = (HEIGHT - self.level.map_h) // 2 if self.level.map_h < HEIGHT else 0
+        
+        # Tạo hàm draw ảo bù trừ offset chính xác
+        draw_cam_x = self.cam_x - offset_x
+        draw_cam_y = self.cam_y - offset_y
+
         # Game world rendering
         world_surf = pygame.Surface((WIDTH, HEIGHT))
         self.level.draw_bg(world_surf, self.cam_x, self.cam_y)
-        self.level.draw_walls(world_surf, self.cam_x, self.cam_y)
+        self.level.draw_walls(world_surf, draw_cam_x, draw_cam_y)
 
         # Planted lights
         for pl in self.planted_lights:
-            pl.draw(world_surf, self.cam_x, self.cam_y)
+            pl.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # Items (chỉ vẽ nếu visible)
         for item in self.level.items:
             if item.alive and self._is_visible(item.x, item.y):
-                item.draw(world_surf, self.cam_x, self.cam_y)
+                item.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # Robots (chỉ vẽ nếu visible)
         for r in self.level.robots:
             if r.alive and self._is_visible(r.x, r.y):
-                r.draw(world_surf, self.cam_x, self.cam_y)
+                r.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # Bullets (người chơi + robot)
         for b in self.bullets:
-            if b.alive: b.draw(world_surf, self.cam_x, self.cam_y)
+            if b.alive: b.draw(world_surf, draw_cam_x, draw_cam_y)
         for eb in self.enemy_bullets:
-            if eb.alive: eb.draw(world_surf, self.cam_x, self.cam_y)
+            if eb.alive: eb.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # Player
-        self.player.draw(world_surf, self.cam_x, self.cam_y)
+        self.player.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # Particles
         for p in self.particles:
-            p.draw(world_surf, self.cam_x, self.cam_y)
+            p.draw(world_surf, draw_cam_x, draw_cam_y)
 
         # === LIGHTING OVERLAY ===
-        light_mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        light_mask.fill((0, 0, 0, 220))  # Tối đen
+        if self.level_num == 5:
+            # Màn 6 sáng hẳn ra, không còn tối nữa và không bật được đèn
+            pass
+        else:
+            light_mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            # Màn 1, 2 hơi hơi mờ sương không tối hẳn (opacity 110), Màn 3, 4, 5 giữ nguyên (opacity 220)
+            opacity = 110 if self.level_num in (0, 1) else 220
+            light_mask.fill((0, 0, 0, opacity))
 
-        px = int(self.player.x - self.cam_x)
-        py = int(self.player.y - self.cam_y)
+            px = int(self.player.x - draw_cam_x)
+            py = int(self.player.y - draw_cam_y)
 
-        # Vùng gần CR7 luôn sáng (tròn nhỏ)
-        pygame.draw.circle(light_mask, (0, 0, 0, 0), (px, py), DARK_RADIUS)
+            # Vùng gần CR7 luôn sáng (tròn nhỏ)
+            pygame.draw.circle(light_mask, (0, 0, 0, 0), (px, py), DARK_RADIUS)
 
-        # Đèn tam giác
-        if self.player.light_on:
-            self._draw_cone_light(light_mask, px, py, self.player.angle, LIGHT_RANGE, math.radians(LIGHT_ANGLE))
+            # Đèn tam giác
+            if self.player.light_on:
+                self._draw_cone_light(light_mask, px, py, self.player.angle, LIGHT_RANGE, math.radians(LIGHT_ANGLE))
 
-        # Planted lights
-        for pl in self.planted_lights:
-            plx = int(pl.x - self.cam_x)
-            ply = int(pl.y - self.cam_y)
-            frac = pl.timer / PLANTED_LIGHT_DURATION
-            r = int(pl.radius * frac)
-            if r > 5:
-                pygame.draw.circle(light_mask, (0, 0, 0, 0), (plx, ply), r)
+            # Planted lights
+            for pl in self.planted_lights:
+                plx = int(pl.x - draw_cam_x)
+                ply = int(pl.y - draw_cam_y)
+                frac = pl.timer / PLANTED_LIGHT_DURATION
+                r = int(pl.radius * frac)
+                if r > 5:
+                    pygame.draw.circle(light_mask, (0, 0, 0, 0), (plx, ply), r)
 
-        # Ambient lights
-        for ax, ay, ar in self.level.ambient_lights:
-            alx = int(ax - self.cam_x)
-            aly = int(ay - self.cam_y)
-            if -ar < alx < WIDTH + ar and -ar < aly < HEIGHT + ar:
-                pygame.draw.circle(light_mask, (0, 0, 0, 80), (alx, aly), ar)
+            # Ambient lights
+            for ax, ay, ar in self.level.ambient_lights:
+                alx = int(ax - draw_cam_x)
+                aly = int(ay - draw_cam_y)
+                if -ar < alx < WIDTH + ar and -ar < aly < HEIGHT + ar:
+                    pygame.draw.circle(light_mask, (0, 0, 0, 80), (alx, aly), ar)
 
-        # Scan hiệu ứng
-        if self.scan_active:
-            pygame.draw.circle(light_mask, (0, 0, 0, 0), (px, py), int(SCAN_RADIUS * (1 - self.scan_timer/1.5) + 50))
+            # Scan hiệu ứng
+            if self.scan_active:
+                pygame.draw.circle(light_mask, (0, 0, 0, 0), (px, py), int(SCAN_RADIUS * (1 - self.scan_timer/1.5) + 50))
 
-        # Xung sáng
-        if self.pulse_timer > 0:
-            light_mask.fill((0, 0, 0, int(50 * self.pulse_timer / 0.5)))
+            # Xung sáng
+            if self.pulse_timer > 0:
+                light_mask.fill((0, 0, 0, int(50 * self.pulse_timer / 0.5)))
 
-        world_surf.blit(light_mask, (0, 0))
+            world_surf.blit(light_mask, (0, 0))
 
         # Sandstorm overlay (màn 3)
         if self.level_num == 2:
@@ -1132,7 +1438,7 @@ class Game:
         elif self.state == 'victory':
             draw_victory(screen)
         elif self.state == 'paused':
-            draw_pause_menu(screen, self.pause_sel)
+            draw_pause_menu(screen, self.pause_sel, self.lobby_volume, self.game_volume)
 
     def _draw_cone_light(self, mask, cx, cy, angle, length, spread):
         """Vẽ vùng sáng hình tam giác (quạt nón) lên light mask"""
@@ -1318,30 +1624,87 @@ class Game:
     def manage_music(self):
         if not self.music_loaded:
             return
-        lobby_states = {'menu', 'level_select', 'items', 'controls', 'intro'}
-        if self.state in lobby_states:
-            if not pygame.mixer.music.get_busy():
-                try:
-                    pygame.mixer.music.play(-1)
-                except Exception:
-                    pass
-        else:
+        # Nếu đang ở phần giới thiệu cốt truyện khởi đầu -> Không phát nhạc sảnh chờ
+        if self.state == 'story':
             if pygame.mixer.music.get_busy():
                 try:
                     pygame.mixer.music.stop()
+                    self.current_playing_track = None
                 except Exception:
                     pass
+            return
+
+        lobby_states = {'menu', 'level_select', 'items', 'settings', 'intro', 'backpack'}
+        
+        # Nếu đang ở sảnh chờ / menu / backpack / settings
+        if self.state in lobby_states:
+            if self.current_playing_track != 'lobby':
+                try:
+                    pygame.mixer.music.stop()
+                    if os.path.exists(self.lobby_music_path):
+                        pygame.mixer.music.load(self.lobby_music_path)
+                        pygame.mixer.music.set_volume(self.lobby_volume)
+                        pygame.mixer.music.play(-1, start=3.0)
+                        self.current_playing_track = 'lobby'
+                except Exception as e:
+                    print(f"[WARN] Lỗi phát nhạc sảnh chờ: {e}")
+            elif not pygame.mixer.music.get_busy():
+                # Trường hợp nhạc bị dừng đột ngột
+                try:
+                    pygame.mixer.music.play(-1, start=3.0)
+                except Exception:
+                    pass
+        else:
+            # Đang trong trận đấu (các màn từ 1 đến 6) hoặc màn victory/gameover
+            # Tuy nhiên, chỉ khi bắt đầu vào màn (state == 'level' hoặc victory/gameover) mới phát âm thanh, loại trừ màn giới thiệu (level_intro) để giữ im lặng đúng lúc
+            in_game_states = {'playing', 'victory', 'gameover'}
+            if self.state in in_game_states:
+                if self.current_playing_track != 'game':
+                    try:
+                        pygame.mixer.music.stop()
+                        if os.path.exists(self.game_music_path):
+                            pygame.mixer.music.load(self.game_music_path)
+                            pygame.mixer.music.set_volume(self.game_volume)
+                            pygame.mixer.music.play(0)  # Phát 1 lần, chúng ta sẽ tự kiểm tra để lặp lại từ đầu
+                            self.current_playing_track = 'game'
+                            self.game_music_start_time = pygame.time.get_ticks() / 1000.0
+                    except Exception as e:
+                        print(f"[WARN] Lỗi phát nhạc trận đấu: {e}")
+                else:
+                    # Kiểm tra xem đã hết 108 giây (tương đương từ 1 phút 12 giây đến 3 phút tròn) chưa
+                    # Vì contra_stage_music.mp3 được trích xuất chính xác là đoạn từ 1m12s đến 3m00s (độ dài đúng 108 giây),
+                    # khi trôi qua 108 giây hoặc khi pygame.mixer.music.get_busy() trả về False,
+                    # ta sẽ phát lại từ đầu để lặp vô hạn!
+                    now = pygame.time.get_ticks() / 1000.0
+                    elapsed = now - self.game_music_start_time
+                    if elapsed >= 108.0 or not pygame.mixer.music.get_busy():
+                        try:
+                            pygame.mixer.music.stop()
+                            pygame.mixer.music.play(0)
+                            self.game_music_start_time = pygame.time.get_ticks() / 1000.0
+                        except Exception:
+                            pass
+            else:
+                # Nếu đang ở 'level_intro' (giới thiệu màn) hoặc trạng thái khác, tắt nhạc game để giữ yên tĩnh đến khi bắt đầu chơi
+                if pygame.mixer.music.get_busy():
+                    try:
+                        pygame.mixer.music.stop()
+                        self.current_playing_track = None
+                    except Exception:
+                        pass
 
 # === MAIN LOOP ===
 def main():
     game = Game()
     while True:
         game.handle_events()
-        game.update()
+        # Calculate real delta time in seconds, capped to 0.1s to avoid physics break on lag spikes
+        raw_ms = clock.tick(FPS)
+        dt = min(raw_ms / 1000.0, 0.1)
+        game.update(dt)
         game.draw()
         game.manage_music()
         pygame.display.flip()
-        clock.tick(FPS)
 
 if __name__ == '__main__':
     main()

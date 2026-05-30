@@ -271,9 +271,11 @@ def draw_story(surf, elapsed_ms=0):
 
 _combined_ui_cache = None
 _combined_ui_cached_keys = None
+_cached_split_x = None
+_cached_split_y = None
 
 def get_combined_weapon_ui(unlocked_weapons):
-    global _combined_ui_cache, _combined_ui_cached_keys
+    global _combined_ui_cache, _combined_ui_cached_keys, _cached_split_x, _cached_split_y
     
     # Tạo key duy nhất để kiểm tra thay đổi
     current_key = ",".join(sorted(unlocked_weapons))
@@ -302,35 +304,41 @@ def get_combined_weapon_ui(unlocked_weapons):
         valid_guns.sort(key=lambda g: gun_sizes[g])
         
         # Tự động tìm đường chia dựa trên ảnh thực tế (hoàn toàn tương thích mọi độ phân giải)
-        # 1. Tìm vertical split_x (quét vùng từ 70% đến 85% chiều rộng)
-        start_x = int(w * 0.70)
-        end_x = int(w * 0.85)
-        split_x = int(w * 0.78)
-        min_bright_x = 999999999
-        
-        for x in range(start_x, end_x):
-            bright_sum = 0
-            for y in range(0, h, 2):  # Bước nhảy 2 để chạy nhanh hơn
-                r, g, b, *a = base_img.get_at((x, y))
-                bright_sum += (r + g + b)
-            if bright_sum < min_bright_x:
-                min_bright_x = bright_sum
-                split_x = x
-                
-        # 2. Tìm horizontal split_y (quét vùng từ 40% đến 60% chiều cao)
-        start_y = int(h * 0.40)
-        end_y = int(h * 0.60)
-        split_y = int(h * 0.50)
-        min_bright_y = 999999999
-        
-        for y in range(start_y, end_y):
-            bright_sum = 0
-            for x in range(split_x, w, 2):  # Chỉ quét vùng bên phải của split_x
-                r, g, b, *a = base_img.get_at((x, y))
-                bright_sum += (r + g + b)
-            if bright_sum < min_bright_y:
-                min_bright_y = bright_sum
-                split_y = y
+        if _cached_split_x is None:
+            # 1. Tìm vertical split_x (quét vùng từ 70% đến 85% chiều rộng)
+            start_x = int(w * 0.70)
+            end_x = int(w * 0.85)
+            split_x = int(w * 0.78)
+            min_bright_x = 999999999
+            
+            for x in range(start_x, end_x):
+                bright_sum = 0
+                for y in range(0, h, 2):  # Bước nhảy 2 để chạy nhanh hơn
+                    r, g, b, *a = base_img.get_at((x, y))
+                    bright_sum += (r + g + b)
+                if bright_sum < min_bright_x:
+                    min_bright_x = bright_sum
+                    split_x = x
+                    
+            # 2. Tìm horizontal split_y (quét vùng từ 40% đến 60% chiều cao)
+            start_y = int(h * 0.40)
+            end_y = int(h * 0.60)
+            split_y = int(h * 0.50)
+            min_bright_y = 999999999
+            
+            for y in range(start_y, end_y):
+                bright_sum = 0
+                for x in range(split_x, w, 2):  # Chỉ quét vùng bên phải của split_x
+                    r, g, b, *a = base_img.get_at((x, y))
+                    bright_sum += (r + g + b)
+                if bright_sum < min_bright_y:
+                    min_bright_y = bright_sum
+                    split_y = y
+            _cached_split_x = split_x
+            _cached_split_y = split_y
+        else:
+            split_x = _cached_split_x
+            split_y = _cached_split_y
                 
         # Thêm lề đệm (padding) tỷ lệ theo kích thước ảnh thực tế
         pad_x = int(split_x * 0.05)
@@ -548,7 +556,7 @@ def draw_menu(surf, selected, player_skin='mu', unlocked_weapons=['pistol']):
                 pygame.draw.rect(surf, YELLOW, (rect.x - 10, rect.y, rect.w + 20, rect.h), 2, border_radius=8)
             
             # Đặt tên nhãn nút
-            btn_labels = ["VÀO CHƠI", "GIỚI THIỆU", "VẬT PHẨM", "ĐIỀU KHIỂN", "THOÁT GAME"]
+            btn_labels = ["VÀO CHƠI", "GIỚI THIỆU", "VẬT PHẨM", "CÀI ĐẶT", "THOÁT GAME"]
             label = btn_labels[i] if i < len(btn_labels) else f"NÚT {i}"
             draw_text(surf, label, rect.centerx, rect.centery, sz, c, True)
 def draw_level_select(surf, selected, levels_unlocked):
@@ -981,6 +989,8 @@ def draw_grab_hero(surf, cx, cy, wid=None):
         pygame.draw.rect(surf, (40, 40, 45), (cx + 18, cy + 16, 5, 8)) # Tay cầm súng
         pygame.draw.line(surf, gun_color, (cx + 38, cy + 9), (cx + 46, cy + 9), 3) # Nòng súng
 
+_shop_image_cache = {}
+
 def draw_shop_screen(surf, selected_weapon, unlocked_weapons, coins, preview_weapon, error_timer=0,
                      unlocked_pets=None, selected_pet=None, shop_tab='gun', preview_pet='mini_robot', player_skin='mu'):
     """Vẽ sảnh Cửa hàng súng & Pet (Shop Grab Hero) chuyên nghiệp theo phong cách chính thức"""
@@ -1201,14 +1211,21 @@ def draw_shop_screen(surf, selected_weapon, unlocked_weapons, coins, preview_wea
         p_info = GUNS_DATA[preview_weapon]
         draw_text(surf, p_info['name'], 845, 185, 26, YELLOW, True, "vt323.ttf")
         
-        gun_img_path = f"{preview_weapon}.png"
-        if os.path.exists(gun_img_path):
-            try:
-                g_img = pygame.image.load(gun_img_path).convert_alpha()
-                g_img = pygame.transform.scale(g_img, (320, 120))
-                surf.blit(g_img, (685, 250))
-            except Exception:
-                draw_vector_weapon(surf, preview_weapon, 845, 315)
+        cache_key = ('gun', preview_weapon)
+        if cache_key not in _shop_image_cache:
+            gun_img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{preview_weapon}.png")
+            g_img = None
+            if os.path.exists(gun_img_path):
+                try:
+                    g_img = pygame.image.load(gun_img_path).convert_alpha()
+                    g_img = pygame.transform.scale(g_img, (320, 120))
+                except Exception:
+                    pass
+            _shop_image_cache[cache_key] = g_img
+            
+        g_img = _shop_image_cache[cache_key]
+        if g_img:
+            surf.blit(g_img, (685, 250))
         else:
             draw_vector_weapon(surf, preview_weapon, 845, 315)
             
@@ -1245,14 +1262,21 @@ def draw_shop_screen(surf, selected_weapon, unlocked_weapons, coins, preview_wea
         p_info = PETS_DATA[preview_pet]
         draw_text(surf, p_info['name'], 845, 185, 26, YELLOW, True, "vt323.ttf")
         
-        pet_img_path = f"{preview_pet}.png"
-        if os.path.exists(pet_img_path):
-            try:
-                p_img = pygame.image.load(pet_img_path).convert_alpha()
-                p_img = pygame.transform.scale(p_img, (150, 150))
-                surf.blit(p_img, (770, 240))
-            except Exception:
-                draw_vector_pet(surf, preview_pet, 845, 315)
+        cache_key = ('pet', preview_pet)
+        if cache_key not in _shop_image_cache:
+            pet_img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{preview_pet}.png")
+            p_img = None
+            if os.path.exists(pet_img_path):
+                try:
+                    p_img = pygame.image.load(pet_img_path).convert_alpha()
+                    p_img = pygame.transform.scale(p_img, (150, 150))
+                except Exception:
+                    pass
+            _shop_image_cache[cache_key] = p_img
+            
+        p_img = _shop_image_cache[cache_key]
+        if p_img:
+            surf.blit(p_img, (770, 240))
         else:
             draw_vector_pet(surf, preview_pet, 845, 315)
             
@@ -1691,12 +1715,12 @@ def draw_game_over(surf, selected):
         
     draw_text(surf, "Dùng phím ← → hoặc ↑ ↓ và nhấn ENTER để chọn", WIDTH // 2, HEIGHT // 2 + 105, 14, (120, 120, 140), True)
 
-def draw_pause_menu(surf, selected):
+def draw_pause_menu(surf, selected, lobby_volume=0.25, game_volume=0.28):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 160))
     surf.blit(overlay, (0, 0))
     
-    box_w, box_h = 320, 260
+    box_w, box_h = 420, 420
     box_x, box_y = (WIDTH - box_w) // 2, (HEIGHT - box_h) // 2
     
     # Draw Menu container with glow
@@ -1706,9 +1730,10 @@ def draw_pause_menu(surf, selected):
     # Title
     draw_text(surf, "TẠM DỪNG", WIDTH // 2, box_y + 30, 28, (0, 200, 255), True)
     
+    # --- 3 NÚT CHỨC NĂNG ---
     options = ["TIẾP TỤC", "CHƠI LẠI", "THOÁT GAME"]
     for i, opt in enumerate(options):
-        y = box_y + 90 + i * 50
+        y = box_y + 80 + i * 50
         is_sel = (i == selected)
         
         bg_col = (10, 40, 60) if is_sel else (25, 25, 35)
@@ -1725,8 +1750,69 @@ def draw_pause_menu(surf, selected):
             surf.blit(glow, (WIDTH // 2 - 114, y - 22))
             
         draw_text(surf, opt, WIDTH // 2, y, 18, text_col, True)
-        
-    draw_text(surf, "Dùng phím ↑ ↓ và nhấn ENTER để chọn", WIDTH // 2, box_y + 235, 12, (100, 100, 120), True)
+
+    # --- ĐƯỜNG KẺ PHÂN TÁCH ---
+    sep_y = box_y + 230
+    pygame.draw.line(surf, (0, 120, 180, 100), (box_x + 30, sep_y), (box_x + box_w - 30, sep_y), 1)
+    draw_text(surf, "🔊 ÂM LƯỢNG", WIDTH // 2, sep_y + 12, 14, (0, 180, 255), True)
+
+    # --- SLIDER 1: ÂM THANH SẢNH (index 3) ---
+    is_lobby_sel = (selected == 3)
+    lobby_label_y = box_y + 255
+    slider_x = box_x + 60
+    slider_w = box_w - 120
+    slider_h = 10
+    lobby_slider_y = box_y + 275
+
+    label_col = (0, 220, 255) if is_lobby_sel else (150, 160, 170)
+    draw_text(surf, "Nhạc sảnh", slider_x - 5, lobby_label_y, 13, label_col)
+    pct_text = f"{int(lobby_volume * 100)}%"
+    draw_text(surf, pct_text, slider_x + slider_w + 10, lobby_label_y, 13, YELLOW)
+
+    # Background bar
+    pygame.draw.rect(surf, (50, 50, 60), (slider_x, lobby_slider_y, slider_w, slider_h), border_radius=5)
+    # Active progress
+    lw = int(slider_w * lobby_volume)
+    bar_col = (0, 200, 255) if is_lobby_sel else (0, 140, 200)
+    pygame.draw.rect(surf, bar_col, (slider_x, lobby_slider_y, lw, slider_h), border_radius=5)
+    # Handle
+    hx = slider_x + lw
+    pygame.draw.circle(surf, WHITE if is_lobby_sel else (180, 180, 190), (hx, lobby_slider_y + 5), 8)
+    pygame.draw.circle(surf, bar_col, (hx, lobby_slider_y + 5), 5)
+    # Glow khi chọn
+    if is_lobby_sel:
+        glow_s = pygame.Surface((slider_w + 30, slider_h + 20), pygame.SRCALPHA)
+        pygame.draw.rect(glow_s, (0, 180, 255, 25), (0, 0, slider_w + 30, slider_h + 20), border_radius=8)
+        surf.blit(glow_s, (slider_x - 15, lobby_slider_y - 10))
+
+    # --- SLIDER 2: ÂM THANH MÀN CHƠI (index 4) ---
+    is_game_sel = (selected == 4)
+    game_label_y = box_y + 320
+    game_slider_y = box_y + 340
+
+    label_col2 = (0, 220, 255) if is_game_sel else (150, 160, 170)
+    draw_text(surf, "Nhạc trận", slider_x - 5, game_label_y, 13, label_col2)
+    pct_text2 = f"{int(game_volume * 100)}%"
+    draw_text(surf, pct_text2, slider_x + slider_w + 10, game_label_y, 13, YELLOW)
+
+    # Background bar
+    pygame.draw.rect(surf, (50, 50, 60), (slider_x, game_slider_y, slider_w, slider_h), border_radius=5)
+    # Active progress
+    gw = int(slider_w * game_volume)
+    bar_col2 = (0, 200, 255) if is_game_sel else (0, 140, 200)
+    pygame.draw.rect(surf, bar_col2, (slider_x, game_slider_y, gw, slider_h), border_radius=5)
+    # Handle
+    hx2 = slider_x + gw
+    pygame.draw.circle(surf, WHITE if is_game_sel else (180, 180, 190), (hx2, game_slider_y + 5), 8)
+    pygame.draw.circle(surf, bar_col2, (hx2, game_slider_y + 5), 5)
+    # Glow khi chọn
+    if is_game_sel:
+        glow_s2 = pygame.Surface((slider_w + 30, slider_h + 20), pygame.SRCALPHA)
+        pygame.draw.rect(glow_s2, (0, 180, 255, 25), (0, 0, slider_w + 30, slider_h + 20), border_radius=8)
+        surf.blit(glow_s2, (slider_x - 15, game_slider_y - 10))
+
+    # --- HƯỚNG DẪN ---
+    draw_text(surf, "↑↓ Chọn  |  ←→ Chỉnh âm lượng  |  ENTER Xác nhận", WIDTH // 2, box_y + box_h - 25, 11, (100, 100, 120), True)
 
 def draw_victory(surf):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -2004,3 +2090,175 @@ def draw_intro_screen(surf):
 
     # 3. CHÚ THÍCH PHÍM QUAY LẠI
     draw_text(surf, "Nhấn ESC để quay lại menu sảnh chờ", WIDTH // 2, HEIGHT - 45, 16, (140, 140, 170), True)
+
+def draw_settings_screen(surf, lobby_volume, game_volume, settings_tab='sound', settings_sel=0):
+    """Vẽ màn hình Cài Đặt (Settings Screen) với thiết kế hiện đại, premium bậc nhất"""
+    surf.fill((12, 8, 5))  # Nền tối đất bụi bặm kiểu game sinh tồn quân sự
+
+    # Vẽ ô lưới mờ màu cam rỉ sét hổ phách ở background
+    t = pygame.time.get_ticks()
+    for x in range(0, WIDTH, 40):
+        pygame.draw.line(surf, (60, 25, 10, 40), (x, 0), (x, HEIGHT))
+    for y in range(0, HEIGHT, 40):
+        pygame.draw.line(surf, (60, 25, 10, 40), (0, y), (WIDTH, y))
+
+    # Lớp phủ vignette tối góc hổ phách phát sáng
+    glow_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    pygame.draw.rect(glow_surf, (255, 95, 0, 10), (0, 0, WIDTH, HEIGHT))
+    surf.blit(glow_surf, (0, 0))
+    
+    # Vệt quét radar
+    scan_y = (t // 6) % HEIGHT
+    scanline = pygame.Surface((WIDTH, 3), pygame.SRCALPHA)
+    scanline.fill((255, 95, 0, 20))
+    surf.blit(scanline, (0, scan_y))
+
+    # Đường viền HUD cam quân đội cứng cáp
+    pygame.draw.rect(surf, (255, 95, 0), (30, 95, 1140, 525), 2, border_radius=6)
+
+    # Tiêu đề chính
+    draw_text(surf, "CÀI ĐẶT HỆ THỐNG", WIDTH // 2, 25, 32, (255, 120, 0), True, "press_start_2p.ttf")
+    draw_text(surf, "Thiết lập cấu hình âm thanh & phím điều khiển", WIDTH // 2, 65, 16, (140, 140, 170), True)
+
+    # Nút Đóng (X) góc trên bên phải
+    close_rect = pygame.Rect(1110, 35, 40, 40)
+    pygame.draw.rect(surf, (60, 20, 15), close_rect, border_radius=6)
+    pygame.draw.rect(surf, (255, 95, 0), close_rect, 1, border_radius=6)
+    draw_text(surf, "X", 1130, 55, 18, (255, 95, 0), True, "press_start_2p.ttf")
+
+    # --- HỆ THỐNG TABS (ÂM THANH vs ĐIỀU KHIỂN) ---
+    # Tab 1: ÂM THANH
+    bg_color1 = (220, 50, 30) if settings_tab == 'sound' else (25, 20, 15)
+    text_color1 = WHITE if settings_tab == 'sound' else (150, 140, 130)
+    pygame.draw.rect(surf, bg_color1, (320, 105, 270, 50), border_radius=4)
+    pygame.draw.rect(surf, (255, 120, 0) if settings_tab == 'sound' else (50, 45, 40), (320, 105, 270, 50), 1, border_radius=4)
+    draw_text(surf, "🔊 ÂM THANH", 455, 120, 18, text_color1, True)
+
+    # Tab 2: ĐIỀU KHIỂN
+    bg_color2 = (220, 50, 30) if settings_tab == 'controls' else (25, 20, 15)
+    text_color2 = WHITE if settings_tab == 'controls' else (150, 140, 130)
+    pygame.draw.rect(surf, bg_color2, (610, 105, 270, 50), border_radius=4)
+    pygame.draw.rect(surf, (255, 120, 0) if settings_tab == 'controls' else (50, 45, 40), (610, 105, 270, 50), 1, border_radius=4)
+    draw_text(surf, "🎮 ĐIỀU KHIỂN", 745, 120, 18, text_color2, True)
+
+    # Khung nội dung chính bên dưới
+    content_rect = pygame.Rect(50, 170, 1100, 435)
+    pygame.draw.rect(surf, (15, 12, 10), content_rect, border_radius=6)
+    pygame.draw.rect(surf, (120, 45, 15), content_rect, 1, border_radius=6)
+
+    # Khung la bàn radar trang trí phong cách viễn tưởng
+    radar_surf = pygame.Surface((1100, 435), pygame.SRCALPHA)
+    # Vẽ góc nhọn trang trí
+    b_size = 15
+    pygame.draw.lines(radar_surf, (255, 95, 0, 40), False, [(15, 15 + b_size), (15, 15), (15 + b_size, 15)], 2)
+    pygame.draw.lines(radar_surf, (255, 95, 0, 40), False, [(1085, 15 + b_size), (1085, 15), (1085 - b_size, 15)], 2)
+    pygame.draw.lines(radar_surf, (255, 95, 0, 40), False, [(15, 420 - b_size), (15, 420), (15 + b_size, 420)], 2)
+    pygame.draw.lines(radar_surf, (255, 95, 0, 40), False, [(1085, 420 - b_size), (1085, 420), (1085 - b_size, 420)], 2)
+    surf.blit(radar_surf, (50, 170))
+
+    if settings_tab == 'sound':
+        # --- TAB ÂM THANH ---
+        draw_text(surf, "CẤU HÌNH ÂM THANH TRONG GAME", WIDTH // 2, 200, 24, YELLOW, True, "vt323.ttf")
+        draw_text(surf, "Dùng chuột click trực tiếp hoặc dùng phím ↑ ↓ chọn slider, ← → để tăng giảm âm lượng", WIDTH // 2, 230, 14, (150, 160, 155), True)
+
+        # 1. ÂM THANH SẢNH (LOBBY MUSIC VOLUME)
+        is_lobby_sel = (settings_sel == 0)
+        card_lobby_y = 265
+        pygame.draw.rect(surf, (40, 25, 15) if is_lobby_sel else (18, 14, 12), (80, card_lobby_y, 1040, 95), border_radius=6)
+        pygame.draw.rect(surf, YELLOW if is_lobby_sel else (60, 40, 30), (80, card_lobby_y, 1040, 95), 2 if is_lobby_sel else 1, border_radius=6)
+        
+        # Nhãn & Icon
+        label_color = YELLOW if is_lobby_sel else WHITE
+        draw_text(surf, "🎵 Âm thanh sảnh chờ", 110, card_lobby_y + 18, 20, label_color)
+        draw_text(surf, "Điều chỉnh âm lượng nhạc nền phát tại sảnh chờ, balo và cửa hàng", 110, card_lobby_y + 50, 12, (150, 150, 150))
+        
+        # Thanh trượt (Slider) từ X: 450 -> 850 (độ dài 400px)
+        slider_x = 450
+        slider_y = card_lobby_y + 40
+        slider_w = 400
+        slider_h = 10
+        # Background bar
+        pygame.draw.rect(surf, (50, 50, 50), (slider_x, slider_y, slider_w, slider_h), border_radius=5)
+        # Active progress bar
+        lobby_w = int(slider_w * lobby_volume)
+        pygame.draw.rect(surf, (255, 120, 0), (slider_x, slider_y, lobby_w, slider_h), border_radius=5)
+        # Handle (Nút tròn trượt)
+        handle_x = slider_x + lobby_w
+        pygame.draw.circle(surf, WHITE, (handle_x, slider_y + 5), 10)
+        pygame.draw.circle(surf, (255, 120, 0), (handle_x, slider_y + 5), 6)
+        
+        # Số % âm lượng
+        draw_text(surf, f"{int(lobby_volume * 100)}%", slider_x + slider_w + 30, slider_y - 2, 20, YELLOW)
+
+        # 2. ÂM THANH MÀN CHƠI (GAME LEVEL MUSIC VOLUME)
+        is_game_sel = (settings_sel == 1)
+        card_game_y = 385
+        pygame.draw.rect(surf, (40, 25, 15) if is_game_sel else (18, 14, 12), (80, card_game_y, 1040, 95), border_radius=6)
+        pygame.draw.rect(surf, YELLOW if is_game_sel else (60, 40, 30), (80, card_game_y, 1040, 95), 2 if is_game_sel else 1, border_radius=6)
+        
+        # Nhãn & Icon
+        label_color2 = YELLOW if is_game_sel else WHITE
+        draw_text(surf, "⚔️ Âm thanh màn chơi", 110, card_game_y + 18, 20, label_color2)
+        draw_text(surf, "Điều chỉnh âm lượng nhạc nền trong các màn chiến đấu (màn 1-6)", 110, card_game_y + 50, 12, (150, 150, 150))
+        
+        # Thanh trượt (Slider)
+        slider_y2 = card_game_y + 40
+        pygame.draw.rect(surf, (50, 50, 50), (slider_x, slider_y2, slider_w, slider_h), border_radius=5)
+        game_w = int(slider_w * game_volume)
+        pygame.draw.rect(surf, (255, 120, 0), (slider_x, slider_y2, game_w, slider_h), border_radius=5)
+        handle_x2 = slider_x + game_w
+        pygame.draw.circle(surf, WHITE, (handle_x2, slider_y2 + 5), 10)
+        pygame.draw.circle(surf, (255, 120, 0), (handle_x2, slider_y2 + 5), 6)
+        
+        # Số % âm lượng
+        draw_text(surf, f"{int(game_volume * 100)}%", slider_x + slider_w + 30, slider_y2 - 2, 20, YELLOW)
+
+        # Chú thích nhỏ dưới cùng
+        draw_text(surf, "💡 Mẹo: Có thể click bất kỳ điểm nào trên thanh để set âm lượng tức thì", WIDTH // 2, 530, 14, (0, 200, 150), True)
+
+    elif settings_tab == 'controls':
+        # --- TAB ĐIỀU KHIỂN (HƯỚNG DẪN) ---
+        draw_text(surf, "PHÍM TẮT ĐIỀU KHIỂN TRONG TRẬN ĐẤU", WIDTH // 2, 190, 22, YELLOW, True, "vt323.ttf")
+        
+        controls = [
+            ("WASD / Phím Mũi Tên", "Di chuyển nhân vật chính (CR7)"),
+            ("Chuột Trái / Phím J", "Tấn công (Kiếm chém lan rộng / Bắn súng)"),
+            ("Phím L", "Đổi vũ khí nhanh (Kiếm thép ↔ Súng năng lượng)"),
+            ("1, 2, G / Cuộn Chuột", "Đổi qua lại các súng mang theo"),
+            ("Phím R", "Nạp đạn thủ công (khi súng còn đạn)"),
+            ("Phím Shift", "Chạy nhanh tăng +50% tốc độ di chuyển"),
+            ("Phím T", "Cắm Đèn Trụ phát sáng dụ quái (-20 NL)"),
+            ("Phím Q", "Đèn Choáng quái xanh lá trong tầm (-15 NL)"),
+            ("Phím E", "Quét Radar hiện quái mờ trong bóng tối (-10 NL)"),
+            ("Phím F", "Xung Sáng tối thượng làm mù tất cả quái (-40 NL)"),
+            ("Phím SPACE", "Bật/Tắt đèn pin chiếu sáng quạt (miễn phí)"),
+            ("Phím 3", "Bật/Tắt chế độ tự chơi BFS (Autoplay BFS)"),
+            ("Phím 4", "Bật/Tắt chế độ tự chơi A* (Autoplay A*)"),
+            ("Phím 5", "Bật/Tắt chế độ tự chơi DFS (Autoplay DFS)"),
+            ("Phím ESC", "Tạm dừng game để cài đặt / Quay lại Menu sảnh"),
+        ]
+
+        # Chia controls làm 2 cột vẽ cho đẹp
+        col_w = 480
+        col_gap = 60
+        start_cx = WIDTH // 2 - col_w - col_gap // 2 + 10
+        start_cy = 215
+        
+        for idx, (key, desc) in enumerate(controls):
+            row = idx % 8
+            col = idx // 8
+            
+            x = start_cx + col * (col_w + col_gap)
+            y = start_cy + row * 47
+            
+            # Khung con đựng phím tắt
+            pygame.draw.rect(surf, (22, 18, 16), (x, y, col_w, 38), border_radius=4)
+            pygame.draw.rect(surf, (60, 35, 20), (x, y, col_w, 38), 1, border_radius=4)
+            
+            # Vẽ phím tắt
+            draw_text(surf, key, x + 15, y + 8, 13, (100, 200, 255), False, None, True)
+            # Vẽ mô tả
+            draw_text(surf, desc, x + 175, y + 10, 11, (200, 200, 210))
+
+    # Hướng dẫn thoát dưới cùng màn hình
+    draw_text(surf, "Nhấn ESC hoặc ấn biểu tượng (X) để lưu cài đặt & quay lại sảnh chính", WIDTH // 2, HEIGHT - 35, 15, (120, 140, 130), True)
