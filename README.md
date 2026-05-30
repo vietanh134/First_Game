@@ -278,3 +278,13 @@ KT1(game)/
 ---
 
 > 🎮 **Chúc bạn chơi vui vẻ và chiến thắng lũ robot!** 🤖💥
+
+---
+
+## 💝 ỦNG HỘ (SUPPORT)
+
+Nếu bạn thấy hay hãy ủng hộ mình nhé!
+
+<p align="center">
+  <img src="donate_qr.png" width="280" alt="Techcombank VietQR Donation">
+</p>
